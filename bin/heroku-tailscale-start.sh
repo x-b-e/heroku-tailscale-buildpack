@@ -8,20 +8,22 @@ if [ -z "$TAILSCALE_AUTH_KEY" ]; then
 fi
 
 wait_for_tailscale_running() {
-    timeout=5     # Timeout in seconds
-    interval=0.5  # Interval between checks
-    elapsed=0
+  local timeout
+  timeout=5     # Timeout in seconds
+  local interval
+  interval=0.5  # Interval between checks
+  local elapsed
+  elapsed=0
 
-    while [ "$elapsed" -lt "$timeout" ]; do
-        state=$(tailscale status -json | jq -r .BackendState)
-        if [ "$state" = "Running" ]; then            
-            return 0
-        fi
-        sleep "$interval"
-        elapsed=$(echo "$elapsed + $interval" | bc)
-    done
-    
-    return 1
+  while [ "$elapsed" -lt "$timeout" ]; do
+    if tailscale status -json | grep -q 'Running'; then
+      return 0
+    fi
+    sleep "$interval"
+    elapsed=$(echo "$elapsed + $interval" | bc)
+  done
+
+  return 1
 }
 
 if [ -z "$TAILSCALE_HOSTNAME" ]; then
@@ -35,23 +37,25 @@ if [ -z "$TAILSCALE_HOSTNAME" ]; then
     DYNO=${DYNO//_/-}
     TAILSCALE_HOSTNAME="heroku-$HEROKU_APP_NAME-${HEROKU_SLUG_COMMIT:0:8}-$DYNO"
   fi
-else
-  TAILSCALE_HOSTNAME="$TAILSCALE_HOSTNAME"
 fi
-tailscaled -cleanup > /dev/null 2>&1
-(tailscaled -verbose ${TAILSCALED_VERBOSE:--1} --tun=userspace-networking --socks5-server=localhost:1055 > /dev/null 2>&1 &)  
+# see https://tailscale.com/kb/1107/heroku
+echo "[tailscale]: tailscaled -cleanup"
+tailscaled -cleanup
+echo "[tailscale]: tailscaled --tun --socks5-server &"
+ALL_PROXY_IP_PORT="localhost:1055"
+tailscaled -verbose "${TAILSCALED_VERBOSE:--1}" --tun=userspace-networking --socks5-server=$ALL_PROXY_IP_PORT &
+echo "[tailscale]: tailscale up"
 tailscale up \
-  --authkey="${TAILSCALE_AUTH_KEY}?preauthorized=true&ephemeral=true" \
-  --hostname="$TAILSCALE_HOSTNAME" \
-  --advertise-tags=${TAILSCALE_ADVERTISE_TAGS:-} \
-  --accept-routes \
-  --timeout=15s \
-  ${TAILSCALE_ADDITIONAL_ARGS:---timeout=15s}
+  --auth-key="${TAILSCALE_AUTH_KEY}" \
+  --hostname="${TAILSCALE_HOSTNAME}" \
+  --advertise-tags="${TAILSCALE_ADVERTISE_TAGS:-}" \
+  "${TAILSCALE_ADDITIONAL_ARGS:---timeout=15s}"
+echo "[tailscale]: tailscale started"
 
-export ALL_PROXY=socks5://localhost:1055/
+export ALL_PROXY="socks5://${ALL_PROXY_IP_PORT}/"
 
 if wait_for_tailscale_running; then
-  echo "[tailscale]: Connected to tailnet as hostname=$TAILSCALE_HOSTNAME; SOCKS5 proxy available at localhost:1055"
+  echo "[tailscale]: Connected to tailnet as hostname=$TAILSCALE_HOSTNAME; SOCKS5 proxy available at ${ALL_PROXY_IP_PORT}"
 else
   echo "[tailscale]: Warning - Backend did not reach 'Running' state within timeout"
 fi
