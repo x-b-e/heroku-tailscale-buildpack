@@ -98,10 +98,12 @@ main() {
   fi
 
   debug "[tailscale]: tailscaled --tun --socks5-server &"
+  # https://tailscale.com/kb/1111/ephemeral-nodes#faq
   run_cmd tailscaled \
     -verbose "${TAILSCALED_VERBOSE}" \
     --tun=userspace-networking \
     --socks5-server=$ALL_PROXY_IP_PORT \
+    --state=mem \
     &
   debug "[tailscale]: tailscale up"
   run_cmd tailscale up \
