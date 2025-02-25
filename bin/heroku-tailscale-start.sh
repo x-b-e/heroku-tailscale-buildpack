@@ -12,7 +12,7 @@ readonly ALL_PROXY_IP_PORT="localhost:1055"
 readonly TAILSCALED_CLEANUP="${TAILSCALED_CLEANUP:-}"
 readonly TAILSCALED_VERBOSE="${TAILSCALED_VERBOSE:--1}"
 readonly TAILSCALE_ADVERTISE_TAGS="${TAILSCALE_ADVERTISE_TAGS:-}"
-readonly TAILSCALE_ADDITIONAL_ARGS="${TAILSCALE_ADDITIONAL_ARGS:---timeout=15s}"
+readonly TAILSCALE_ADDITIONAL_ARGS="${TAILSCALE_ADDITIONAL_ARGS:---timeout=14s --accept-routes}"
 #  --accept-dns=true
 #  --accept-routes=false
 #  --advertise-exit-node=false
