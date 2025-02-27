@@ -43,12 +43,16 @@ cp "$BUILDPACK_DIR/bin/heroku-tailscale-test.sh" "$TAILSCALE_INSTALL_DIR/heroku-
 chmod +x "$TAILSCALE_INSTALL_DIR/heroku-tailscale-start.sh"
 chmod +x "$TAILSCALE_INSTALL_DIR/heroku-tailscale-test.sh"
 mkdir -p $BUILD_DIR/.profile.d
+# Add Tailscale config
+# system state directory "/app/.local/share/tailscale"
+# logpolicy.ConfigFromFile /app/.local/share/tailscale/tailscaled.log.conf
+mkdir -p $BUILD_DIR/.config/share/tailscale
 echo 'export PATH="/app/vendor/tailscale:$PATH"' >> $BUILD_DIR/.profile.d/heroku-tailscale-buildpack.sh
 
 log "Installing ProxyChains-ng"
 PROXYCHAINS_BUILD_DIR="$CACHE_DIR/proxychains-ng-$PROXYCHAINS_VERSION"
-if [ ! -f "$PROXYCHAINS_BUILD_DIR/proxychains4" ]; then  
-  rm -rf $PROXYCHAINS_BUILD_DIR  
+if [ ! -f "$PROXYCHAINS_BUILD_DIR/proxychains4" ]; then
+  rm -rf $PROXYCHAINS_BUILD_DIR
   wget $PROXYCHAINS_SOURCE_URL -O $CACHE_DIR/proxychains.tar.gz
   cd $CACHE_DIR
   tar -zxvf $CACHE_DIR/proxychains.tar.gz
