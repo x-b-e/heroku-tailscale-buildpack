@@ -22,12 +22,15 @@ CACHE_DIR=$2
 ENV_DIR=$3
 BUILDPACK_DIR="$(dirname "$(dirname "$0")")"
 
-TAILSCALE_VERSION=1.74.0
+# https://github.com/tailscale/tailscale/releases
+# https://pkgs.tailscale.com/stable/#static
+TAILSCALE_VERSION="${TAILSCALE_VERSION:-1.80.2}"
 TAILSCALE_BUILD_ARCH=amd64
 TAILSCALE_SOURCE_URL="https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_${TAILSCALE_BUILD_ARCH}.tgz"
 TAILSCALE_INSTALL_DIR="$BUILD_DIR/vendor/tailscale"
 
-PROXYCHAINS_VERSION=4.17
+# https://github.com/rofl0r/proxychains-ng/releases
+PROXYCHAINS_VERSION="${PROXYCHAINS_VERSION:-4.17}"
 PROXYCHAINS_SOURCE_URL="https://github.com/rofl0r/proxychains-ng/archive/refs/tags/v$PROXYCHAINS_VERSION.tar.gz"
 PROXYCHAINS_INSTALL_DIR="$BUILD_DIR/vendor/proxychains-ng"
 
