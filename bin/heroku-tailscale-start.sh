@@ -4,9 +4,9 @@ set -eo pipefail
 
 readonly TAILSCALE_DISABLE="${TAILSCALE_DISABLE:-0}"
 readonly TAILSCALE_DEBUG="${TAILSCALE_DEBUG:-false}"
-if [ "${TAILSCALE_DEBUG}" = "true" ]; then
-  set -ux
-fi
+case "${TAILSCALE_DEBUG}" in
+  1,true) set -ux ;;
+esac
 readonly TAILSCALE_AUTH_KEY="${TAILSCALE_AUTH_KEY:-}"
 readonly ALL_PROXY_IP_PORT="localhost:1055"
 readonly TAILSCALED_CLEANUP="${TAILSCALED_CLEANUP:-}"
@@ -27,9 +27,9 @@ stringify_args() {
   echo "$args"
 }
 topic()    { echo "-----> $(stringify_args "$@")" >&2 ; }
-info()     { echo "       $(stringify_args "$@")" >&2 ; }
-debug()    { if [ "$TAILSCALE_DEBUG" = "true" ]; then echo -e "[DEBUG]       $(stringify_args "$@")" >&2 ; fi ; }
-error()    { echo " !     $(stringify_args "$@")" ;  >&2 exit 1  ; }
+log_info()     { echo "       $(stringify_args "$@")" >&2 ; }
+log_debug()    { if [ "$TAILSCALE_DEBUG" = "true" ]; then echo -e "[DEBUG]       $(stringify_args "$@")" >&2 ; fi ; }
+log_error()    { echo " !     $(stringify_args "$@")" ;  >&2 exit 1  ; }
 indent() {
   local command; command='s/^/       /'
   case $(uname) in
@@ -38,12 +38,14 @@ indent() {
   esac
 }
 
-if [ "${TAILSCALE_DISABLE}" = "1" ]; then
-  info "[tailscale]: Is disabled via TAILSCALE_DISABLE"
-  exit 0
-fi
-if [ -z "${TAILSCALE_AUTH_KEY}" ]; then
-  info "[tailscale]: Will not be available because TAILSCALE_AUTH_KEY is not set"
+case "${TAILSCALE_DISABLE}" in
+  1,true)
+    log_info "[tailscale]: Is disabled via TAILSCALE_DISABLE"
+    exit 0
+  ;;
+esac
+if [ -z "${TAILSCALE_AUTH_KEY:-}" ]; then
+  log_info "[tailscale]: Will not be available because TAILSCALE_AUTH_KEY is not set"
   exit 0
 fi
 
@@ -66,7 +68,7 @@ readonly TAILSCALE_HOSTNAME="${TAILSCALE_HOSTNAME:-"$(build_tailscale_hostname)"
 run_cmd() {
   local cmd
   cmd="$*"
-  debug "cmd=${cmd}"
+  log_debug "cmd=${cmd}"
   eval "$cmd"
 }
 
@@ -116,9 +118,9 @@ main() {
   export ALL_PROXY="socks5://${ALL_PROXY_IP_PORT}/"
 
   if wait_for_tailscale_running; then
-    info "[tailscale]: Connected to tailnet as hostname=$TAILSCALE_HOSTNAME; SOCKS5 proxy available at ${ALL_PROXY_IP_PORT}"
+    log_info "[tailscale]: Connected to tailnet as hostname=$TAILSCALE_HOSTNAME; SOCKS5 proxy available at ${ALL_PROXY_IP_PORT}"
   else
-    info "[tailscale]: Warning - Backend did not reach 'Running' state within timeout"
+    log_info "[tailscale]: Warning - Backend did not reach 'Running' state within timeout"
   fi
 }
 
