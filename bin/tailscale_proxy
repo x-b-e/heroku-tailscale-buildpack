@@ -9,8 +9,22 @@
 
 set -e # Halt on errors
 
-if [ -n "$TAILSCALE_AUTH_KEY" ] && command -v proxychains4 > /dev/null; then
-    proxychains4 -q -f vendor/proxychains-ng/proxychains.conf "$@"
-else
+readonly TAILSCALE_DISABLE="${TAILSCALE_DISABLE:-0}"
+readonly TAILSCALE_DEBUG="${TAILSCALE_DEBUG:-false}"
+case "${TAILSCALE_DEBUG}" in
+  1,true) set -ux ;;
+esac
+
+case "${TAILSCALE_DISABLE}" in
+  1,true)
     exec "$@"
-fi
+  ;;
+
+  *)
+    if [ -n "${TAILSCALE_AUTH_KEY:-}" ] && command -v proxychains4 > /dev/null; then
+        proxychains4 -q -f vendor/proxychains-ng/proxychains.conf "$@"
+    else
+        exec "$@"
+    fi
+  ;;
+esac

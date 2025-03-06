@@ -8,11 +8,11 @@ shopt -s nullglob # allow file pattern to expand to null
 unset GIT_DIR     # clean up leaking environment
 # set -x          # enable debugging
 
-function log() {
+log_info() {
     echo "-----> $*"
 }
 
-function indent() {
+indent() {
     sed -e 's/^/       /'
 }
 
@@ -21,17 +21,29 @@ BUILD_DIR=$1
 CACHE_DIR=$2
 ENV_DIR=$3
 BUILDPACK_DIR="$(dirname "$(dirname "$0")")"
+USE_RAILS_BIN_WRAPPERS="${USE_RAILS_BIN_WRAPPERS:-"true"}"
+readonly TAILSCALE_DISABLE="${TAILSCALE_DISABLE:-0}"
+case "${TAILSCALE_DISABLE}" in
+  1,true)
+    log_info "[tailscale]: Is disabled via TAILSCALE_DISABLE"
+    exit 0
+  ;;
+esac
 
-TAILSCALE_VERSION=1.74.0
-TAILSCALE_BUILD_ARCH=amd64
+# https://github.com/tailscale/tailscale/releases
+# https://pkgs.tailscale.com/stable/#static
+TAILSCALE_VERSION="${TAILSCALE_VERSION:-1.74.0}"
+TAILSCALE_BUILD_ARCH="${TAILSCALE_BUILD_ARCH:-amd64}"
+# "arm64" "arm" "386" "amd64" "amd64"
 TAILSCALE_SOURCE_URL="https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_${TAILSCALE_BUILD_ARCH}.tgz"
 TAILSCALE_INSTALL_DIR="$BUILD_DIR/vendor/tailscale"
 
-PROXYCHAINS_VERSION=4.17
+# https://github.com/rofl0r/proxychains-ng/releases
+PROXYCHAINS_VERSION="${PROXYCHAINS_VERSION:-4.17}"
 PROXYCHAINS_SOURCE_URL="https://github.com/rofl0r/proxychains-ng/archive/refs/tags/v$PROXYCHAINS_VERSION.tar.gz"
 PROXYCHAINS_INSTALL_DIR="$BUILD_DIR/vendor/proxychains-ng"
 
-log "Installing Tailscale"
+log_info "Installing Tailscale"
 mkdir -p $TAILSCALE_INSTALL_DIR
 export PATH="$TAILSCALE_INSTALL_DIR:$PATH"
 curl -sL $TAILSCALE_SOURCE_URL \
@@ -49,7 +61,7 @@ mkdir -p $BUILD_DIR/.profile.d
 mkdir -p $BUILD_DIR/.config/share/tailscale
 echo 'export PATH="/app/vendor/tailscale:$PATH"' >> $BUILD_DIR/.profile.d/heroku-tailscale-buildpack.sh
 
-log "Installing ProxyChains-ng"
+log_info "Installing ProxyChains-ng"
 PROXYCHAINS_BUILD_DIR="$CACHE_DIR/proxychains-ng-$PROXYCHAINS_VERSION"
 if [ ! -f "$PROXYCHAINS_BUILD_DIR/proxychains4" ]; then
   rm -rf $PROXYCHAINS_BUILD_DIR
@@ -65,17 +77,17 @@ mkdir $PROXYCHAINS_INSTALL_DIR
 cp $PROXYCHAINS_BUILD_DIR/libproxychains4.so $PROXYCHAINS_BUILD_DIR/proxychains4 $BUILDPACK_DIR/conf/proxychains.conf $PROXYCHAINS_INSTALL_DIR
 echo 'export PATH="/app/vendor/proxychains-ng:$PATH"' >> $BUILD_DIR/.profile.d/heroku-tailscale-buildpack.sh
 
-log "Configuring Tailscale to start when booting"
+log_info "Configuring Tailscale to start when booting"
 # Add the line to start tailscale to the end of the file
 echo "/app/vendor/tailscale/heroku-tailscale-start.sh" >> $BUILD_DIR/.profile.d/heroku-tailscale-buildpack.sh
 
-log "Moving the tailscale_proxy into app/bin"
+log_info "Moving the tailscale_proxy into app/bin"
 mkdir -p $BUILD_DIR/bin
 cp "$BUILDPACK_DIR/bin/tailscale_proxy" $BUILD_DIR/bin/
 chmod +x $BUILD_DIR/bin/tailscale_proxy
 
-if [ -f "$BUILD_DIR/bin/rails" ]; then
-  log "Rails app detected: Will replace bin/rails, bin/bundle, and bin/rake with passthrough scripts to tailscale_proxy"
+if [ "$USE_RAILS_BIN_WRAPPERS" = "true" ] && [ -f "$BUILD_DIR/bin/rails" ]; then
+  log_info "Rails app detected: Will replace bin/rails, bin/bundle, and bin/rake with passthrough scripts to tailscale_proxy"
   mv $BUILD_DIR/bin/rails $BUILD_DIR/bin/rails_original
   cp "$BUILDPACK_DIR/bin/rails/rails" $BUILD_DIR/bin/
   chmod +x $BUILD_DIR/bin/rails
