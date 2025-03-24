@@ -42,10 +42,10 @@ if [ "${TAILSCALE_DISABLE}" = "1" ]; then
   info "[tailscale]: Is disabled via TAILSCALE_DISABLE"
   exit 0
 fi
-if [ -z "${TAILSCALE_AUTH_KEY}" ]; then
-  info "[tailscale]: Will not be available because TAILSCALE_AUTH_KEY is not set"
-  exit 0
-fi
+# if [ -z "${TAILSCALE_AUTH_KEY}" ]; then
+#   info "[tailscale]: Will not be available because TAILSCALE_AUTH_KEY is not set"
+#   exit 0
+# fi
 
 build_tailscale_hostname() {
   if [ -z "$HEROKU_APP_NAME" ]; then
