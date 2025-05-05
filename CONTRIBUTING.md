@@ -26,5 +26,5 @@ heroku plugins:install buildpack-registry
 
 cd heroku-tailscale-buildpack
 git checkout main
-heroku buildpacks:publish aspiredu/heroku-tailscale-buildpack
+heroku buildpacks:publish github-org-name-goes-here/heroku-tailscale-buildpack
 ```

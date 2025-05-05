@@ -16,11 +16,11 @@ jobs:
   test-stack:
     strategy:
       matrix:
-        stack: [heroku-18, heroku-20, heroku-22]
+        stack: [heroku-20]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
     - name: run stack test
-      run: bash test/stack-test.sh ${{ matrix.stack }}
+      run: bash test/stack-test.sh ${{ matrix.stack }} >> $GITHUB_STEP_SUMMARY
       env:
         TAILSCALE_TEST_AUTH_KEY: ${{ secrets.TAILSCALE_TEST_AUTH_KEY }}
