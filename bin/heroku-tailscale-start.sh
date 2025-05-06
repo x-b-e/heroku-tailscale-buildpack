@@ -97,7 +97,7 @@ main() {
     run_cmd tailscaled -cleanup
   fi
 
-  debug "[tailscale]: tailscaled --tun --socks5-server &"
+  debug "[tailscale]: tailscaled --tun --socks5-server --state=mem &"
   # https://tailscale.com/kb/1111/ephemeral-nodes#faq
   run_cmd tailscaled \
     -verbose "${TAILSCALED_VERBOSE}" \
@@ -121,5 +121,21 @@ main() {
     info "[tailscale]: Warning - Backend did not reach 'Running' state within timeout"
   fi
 }
+
+#### AUTO LOGOUT ON SIGINT
+# Adapted from https://thisisfranklin.com/2023/01/13/running-rails-on-flyio-with-tailscale.html
+# Trap SIGINT so we gracefully shut down tailscale so node
+# names don't collide upon deploy
+pid=0
+sigint_handler() {
+  if [ $pid -ne 0 ]; then
+    run_cmd tailscale logout
+    kill -SIGINT "$pid"
+    wait "$pid"
+  fi
+  exit 130; # 128 + 2 -- SIGINT
+}
+trap 'kill ${!}; sigint_handler' SIGINT
+####
 
 main
