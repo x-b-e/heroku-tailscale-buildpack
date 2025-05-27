@@ -20,6 +20,7 @@ function indent() {
 BUILD_DIR=$1
 CACHE_DIR=$2
 ENV_DIR=$3
+readonly TAILSCALE_WRAP_RAILS_BINS="${TAILSCALE_WRAP_RAILS_BINS:-false}"
 BUILDPACK_DIR="$(dirname "$(dirname "$0")")"
 
 # https://github.com/tailscale/tailscale/releases
@@ -74,10 +75,10 @@ echo "/app/vendor/tailscale/heroku-tailscale-start.sh" >> $BUILD_DIR/.profile.d/
 
 log "Moving the tailscale_proxy into app/bin"
 mkdir -p $BUILD_DIR/bin
-cp "$BUILDPACK_DIR/bin/tailscale_proxy" $BUILD_DIR/bin/
-chmod +x $BUILD_DIR/bin/tailscale_proxy
+ cp "$BUILDPACK_DIR/bin/tailscale_proxy" $BUILD_DIR/bin/
+ chmod +x $BUILD_DIR/bin/tailscale_proxy
 
-if [ -f "$BUILD_DIR/bin/rails" ]; then
+if [ "$TAILSCALE_WRAP_RAILS_BINS" = "true" ] && [ -f "$BUILD_DIR/bin/rails" ]; then
   log "Rails app detected: Will replace bin/rails, bin/bundle, and bin/rake with passthrough scripts to tailscale_proxy"
   mv $BUILD_DIR/bin/rails $BUILD_DIR/bin/rails_original
   cp "$BUILDPACK_DIR/bin/rails/rails" $BUILD_DIR/bin/
