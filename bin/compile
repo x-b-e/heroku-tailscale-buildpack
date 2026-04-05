@@ -20,6 +20,8 @@ function indent() {
 BUILD_DIR=$1
 CACHE_DIR=$2
 ENV_DIR=$3
+readonly TAILSCALE_WRAP_RAILS_BINS="${TAILSCALE_WRAP_RAILS_BINS:-false}"
+readonly TAILSCALE_AUTOSTART="${TAILSCALE_AUTOSTART:-true}"
 BUILDPACK_DIR="$(dirname "$(dirname "$0")")"
 
 # https://github.com/tailscale/tailscale/releases
@@ -50,6 +52,7 @@ mkdir -p $BUILD_DIR/.profile.d
 # system state directory "/app/.local/share/tailscale"
 # logpolicy.ConfigFromFile /app/.local/share/tailscale/tailscaled.log.conf
 mkdir -p $BUILD_DIR/.config/share/tailscale
+# Add tailscaled and tailscale to PATH
 echo 'export PATH="/app/vendor/tailscale:$PATH"' >> $BUILD_DIR/.profile.d/heroku-tailscale-buildpack.sh
 
 log "Installing ProxyChains-ng"
@@ -66,18 +69,23 @@ if [ ! -f "$PROXYCHAINS_BUILD_DIR/proxychains4" ]; then
 fi
 mkdir $PROXYCHAINS_INSTALL_DIR
 cp $PROXYCHAINS_BUILD_DIR/libproxychains4.so $PROXYCHAINS_BUILD_DIR/proxychains4 $BUILDPACK_DIR/conf/proxychains.conf $PROXYCHAINS_INSTALL_DIR
+# Add proxychains4 to path
 echo 'export PATH="/app/vendor/proxychains-ng:$PATH"' >> $BUILD_DIR/.profile.d/heroku-tailscale-buildpack.sh
 
-log "Configuring Tailscale to start when booting"
-# Add the line to start tailscale to the end of the file
-echo "/app/vendor/tailscale/heroku-tailscale-start.sh" >> $BUILD_DIR/.profile.d/heroku-tailscale-buildpack.sh
+if [ "$TAILSCALE_AUTOSTART" = "true" ]; then
+  log "Configuring Tailscale to start when booting"
+  # Add the line to start tailscale to the end of the file
+  echo "/app/vendor/tailscale/heroku-tailscale-start.sh" >> $BUILD_DIR/.profile.d/heroku-tailscale-buildpack.sh
+else
+  log "Skipping Tailscale autostart. Run manually as: /app/vendor/tailscale/heroku-tailscale-start.sh"
+fi
 
 log "Moving the tailscale_proxy into app/bin"
 mkdir -p $BUILD_DIR/bin
-cp "$BUILDPACK_DIR/bin/tailscale_proxy" $BUILD_DIR/bin/
-chmod +x $BUILD_DIR/bin/tailscale_proxy
+ cp "$BUILDPACK_DIR/bin/tailscale_proxy" "$BUILD_DIR/bin/"
+ chmod +x $BUILD_DIR/bin/tailscale_proxy
 
-if [ -f "$BUILD_DIR/bin/rails" ]; then
+if [ "$TAILSCALE_WRAP_RAILS_BINS" = "true" ] && [ -f "$BUILD_DIR/bin/rails" ]; then
   log "Rails app detected: Will replace bin/rails, bin/bundle, and bin/rake with passthrough scripts to tailscale_proxy"
   mv $BUILD_DIR/bin/rails $BUILD_DIR/bin/rails_original
   cp "$BUILDPACK_DIR/bin/rails/rails" $BUILD_DIR/bin/
