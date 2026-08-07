@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BUILD_DIR=$1
+CACHE_DIR=$2
+BUILDPACK_DIR=$(cd "$(dirname "$0")/.." && pwd)
+
+TS_VERSION=${TAILSCALE_VERSION:-1.80.2}
+GOST_VERSION=${GOST_VERSION:-3.2.6}
+ARCH_RAW=$(uname -m)
+case "$ARCH_RAW" in
+  x86_64|amd64) TS_ARCH=amd64; GOST_ARCH=amd64 ;;
+  aarch64|arm64) TS_ARCH=arm64; GOST_ARCH=arm64 ;;
+  *) echo "Unsupported architecture: $ARCH_RAW" >&2; exit 1 ;;
+esac
+
+VENDOR="$BUILD_DIR/vendor/tailscale-postgres"
+mkdir -p "$VENDOR" "$BUILD_DIR/bin" "$CACHE_DIR/downloads"
+
+download_and_verify() {
+  local url=$1 expected=$2 output=$3
+  curl --fail --show-error --silent --location --retry 3 --retry-all-errors "$url" -o "$output"
+  printf '%s  %s\n' "$expected" "$output" | sha256sum --check --status
+}
+
+TS_TGZ="$CACHE_DIR/downloads/tailscale_${TS_VERSION}_${TS_ARCH}.tgz"
+TS_URL="https://pkgs.tailscale.com/stable/tailscale_${TS_VERSION}_${TS_ARCH}.tgz"
+TS_SHA_URL="${TS_URL}.sha256"
+echo "-----> Installing Tailscale ${TS_VERSION} (${TS_ARCH})"
+curl --fail --show-error --silent --location --retry 3 --retry-all-errors "$TS_SHA_URL" -o "${TS_TGZ}.sha256"
+curl --fail --show-error --silent --location --retry 3 --retry-all-errors "$TS_URL" -o "$TS_TGZ"
+(cd "$(dirname "$TS_TGZ")" && sha256sum --check "$(basename "${TS_TGZ}.sha256")")
+tar -xzf "$TS_TGZ" -C "$VENDOR" --strip-components=1 \
+  "tailscale_${TS_VERSION}_${TS_ARCH}/tailscale" \
+  "tailscale_${TS_VERSION}_${TS_ARCH}/tailscaled"
+
+case "$GOST_ARCH" in
+  amd64) GOST_SHA=b39037b0380ea001fb3c0c28441c2e10bfc694f90682739a65b53e55dce5238b ;;
+  arm64) GOST_SHA=f674c8f4a033dc1dfd4f0d5e9602fbe5b0d0f81307bf3794f44b5b5d6d622eae ;;
+esac
+GOST_TGZ="$CACHE_DIR/downloads/gost_${GOST_VERSION}_linux_${GOST_ARCH}.tar.gz"
+GOST_URL="https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${GOST_ARCH}.tar.gz"
+echo "-----> Installing gost ${GOST_VERSION} (${GOST_ARCH})"
+download_and_verify "$GOST_URL" "$GOST_SHA" "$GOST_TGZ"
+tar -xzf "$GOST_TGZ" -C "$VENDOR" gost
+
+install -m 0755 "$BUILDPACK_DIR/lib/with-tailscale-postgres" "$BUILD_DIR/bin/with-tailscale-postgres"
+install -m 0755 "$BUILDPACK_DIR/lib/tailscale-postgres-check" "$BUILD_DIR/bin/tailscale-postgres-check"
+cat > "$BUILD_DIR/.profile.d/tailscale-postgres.sh" <<'PROFILE'
+export PATH="/app/vendor/tailscale-postgres:$PATH"
+PROFILE
+
+echo "-----> Installed bin/with-tailscale-postgres"

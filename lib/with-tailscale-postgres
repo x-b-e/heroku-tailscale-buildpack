@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+log() { printf '%s\n' "[tailscale-postgres] $*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+require_var() { [[ -n "${!1:-}" ]] || die "$1 is required"; }
+
+require_var TS_OAUTH_SECRET
+require_var TS_TAGS
+require_var PRIVATE_DATABASE_HOST
+[[ $# -gt 0 ]] || die "usage: with-tailscale-postgres COMMAND [ARG ...]"
+
+TS_SOCKS_HOST=${TS_SOCKS_HOST:-127.0.0.1}
+TS_SOCKS_PORT=${TS_SOCKS_PORT:-1055}
+LOCAL_DATABASE_HOST=${LOCAL_DATABASE_HOST:-127.0.0.1}
+LOCAL_DATABASE_PORT=${LOCAL_DATABASE_PORT:-15432}
+PRIVATE_DATABASE_PORT=${PRIVATE_DATABASE_PORT:-5432}
+TS_UP_TIMEOUT=${TS_UP_TIMEOUT:-20s}
+STARTUP_TIMEOUT_SECONDS=${STARTUP_TIMEOUT_SECONDS:-30}
+TS_HOSTNAME=${TS_HOSTNAME:-heroku-${HEROKU_APP_NAME:-app}-${DYNO:-dyno}}
+TS_HOSTNAME=${TS_HOSTNAME//./-}
+TS_HOSTNAME=${TS_HOSTNAME//_/-}
+TS_SOCKET_DIR=${TS_SOCKET_DIR:-/tmp/tailscale-$$}
+mkdir -p "$TS_SOCKET_DIR"
+
+TAILSCALED_PID=
+FORWARDER_PID=
+APP_PID=
+shutting_down=0
+
+terminate() {
+  local signal=${1:-TERM}
+  [[ $shutting_down -eq 0 ]] || return 0
+  shutting_down=1
+  log "received $signal; stopping child processes"
+  [[ -n "$APP_PID" ]] && kill -"$signal" "$APP_PID" 2>/dev/null || true
+  [[ -n "$FORWARDER_PID" ]] && kill -TERM "$FORWARDER_PID" 2>/dev/null || true
+  [[ -n "$TAILSCALED_PID" ]] && kill -TERM "$TAILSCALED_PID" 2>/dev/null || true
+}
+cleanup() {
+  local code=$?
+  terminate TERM
+  wait "$APP_PID" 2>/dev/null || true
+  wait "$FORWARDER_PID" 2>/dev/null || true
+  wait "$TAILSCALED_PID" 2>/dev/null || true
+  rm -rf "$TS_SOCKET_DIR"
+  exit "$code"
+}
+trap 'terminate TERM' TERM
+trap 'terminate INT' INT
+trap cleanup EXIT
+
+log "starting tailscaled in userspace mode"
+tailscaled \
+  --tun=userspace-networking \
+  --socks5-server="${TS_SOCKS_HOST}:${TS_SOCKS_PORT}" \
+  --socket="${TS_SOCKET_DIR}/tailscaled.sock" \
+  --state=mem \
+  > >(sed 's/^/[tailscaled] /' >&2) 2>&1 &
+TAILSCALED_PID=$!
+
+# OAuth client secrets create ephemeral nodes by default. preauthorized=true is
+# explicit so this also works when device approval is enabled.
+AUTH_KEY="${TS_OAUTH_SECRET}?ephemeral=true&preauthorized=true"
+log "joining tailnet as ${TS_HOSTNAME} with tags ${TS_TAGS}"
+tailscale --socket="${TS_SOCKET_DIR}/tailscaled.sock" up \
+  --auth-key="$AUTH_KEY" \
+  --advertise-tags="$TS_TAGS" \
+  --hostname="$TS_HOSTNAME" \
+  --accept-routes \
+  --accept-dns=false \
+  --timeout="$TS_UP_TIMEOUT"
+
+status_json=$(tailscale --socket="${TS_SOCKET_DIR}/tailscaled.sock" status --json)
+grep -q '"BackendState"[[:space:]]*:[[:space:]]*"Running"' <<<"$status_json" \
+  || die "tailscaled did not reach Running state"
+
+log "forwarding ${LOCAL_DATABASE_HOST}:${LOCAL_DATABASE_PORT} to ${PRIVATE_DATABASE_HOST}:${PRIVATE_DATABASE_PORT} through SOCKS5"
+gost \
+  -L="tcp://${LOCAL_DATABASE_HOST}:${LOCAL_DATABASE_PORT}/${PRIVATE_DATABASE_HOST}:${PRIVATE_DATABASE_PORT}" \
+  -F="socks5://${TS_SOCKS_HOST}:${TS_SOCKS_PORT}" \
+  > >(sed 's/^/[gost] /' >&2) 2>&1 &
+FORWARDER_PID=$!
+
+export PGHOST=${PGHOST:-$LOCAL_DATABASE_HOST}
+export PGPORT=${PGPORT:-$LOCAL_DATABASE_PORT}
+
+start=$SECONDS
+until bin/tailscale-postgres-check --tcp-only; do
+  kill -0 "$TAILSCALED_PID" 2>/dev/null || die "tailscaled exited during startup"
+  kill -0 "$FORWARDER_PID" 2>/dev/null || die "gost exited during startup"
+  (( SECONDS - start < STARTUP_TIMEOUT_SECONDS )) || die "database forward was not ready within ${STARTUP_TIMEOUT_SECONDS}s"
+  sleep 0.5
+done
+
+if [[ ${VERIFY_DATABASE_CONNECTION:-true} == true ]] && command -v pg_isready >/dev/null; then
+  log "verifying PostgreSQL through local forward"
+  pg_isready --host="$LOCAL_DATABASE_HOST" --port="$LOCAL_DATABASE_PORT" --timeout=5 \
+    ${PGDATABASE:+--dbname="$PGDATABASE"} >/dev/null \
+    || die "PostgreSQL did not answer through the local forward"
+fi
+
+log "starting application: $*"
+"$@" &
+APP_PID=$!
+set +e
+wait "$APP_PID"
+code=$?
+set -e
+APP_PID=
+exit "$code"

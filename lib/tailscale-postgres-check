@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+host=${LOCAL_DATABASE_HOST:-127.0.0.1}
+port=${LOCAL_DATABASE_PORT:-15432}
+timeout=${CHECK_TIMEOUT_SECONDS:-2}
+exec ruby -rsocket -e 'Socket.tcp(ARGV.fetch(0), Integer(ARGV.fetch(1)), connect_timeout: Integer(ARGV.fetch(2))).close' "$host" "$port" "$timeout"

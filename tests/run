@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+mkdir -p "$TMP/bin" "$TMP/socket"
+LOG="$TMP/log"
+
+cat > "$TMP/bin/tailscaled" <<'SH'
+#!/usr/bin/env bash
+echo "tailscaled $*" >> "$TEST_LOG"
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
+SH
+cat > "$TMP/bin/tailscale" <<'SH'
+#!/usr/bin/env bash
+echo "tailscale $*" >> "$TEST_LOG"
+if [[ " $* " == *" status "* ]]; then
+  printf '{"BackendState":"Running"}\n'
+fi
+SH
+cat > "$TMP/bin/gost" <<'SH'
+#!/usr/bin/env bash
+echo "gost $*" >> "$TEST_LOG"
+exec python3 - "$@" <<'PY'
+import socket, signal, sys
+s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',15432)); s.listen()
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+while True:
+    c,_=s.accept(); c.close()
+PY
+SH
+cat > "$TMP/bin/pg_isready" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+cat > "$TMP/bin/app" <<'SH'
+#!/usr/bin/env bash
+echo "app $*" >> "$TEST_LOG"
+exit "${APP_EXIT:-0}"
+SH
+chmod +x "$TMP/bin"/*
+
+export PATH="$TMP/bin:$PATH" TEST_LOG="$LOG"
+export TS_OAUTH_SECRET=tskey-client-test TS_TAGS=tag:test PRIVATE_DATABASE_HOST=10.0.0.5
+export TS_SOCKET_DIR="$TMP/socket" STARTUP_TIMEOUT_SECONDS=5
+cd "$TMP"
+mkdir -p bin
+cp "$ROOT/lib/tailscale-postgres-check" bin/
+
+"$ROOT/lib/with-tailscale-postgres" app hello
+
+grep -q 'ephemeral=true&preauthorized=true' "$LOG"
+grep -q -- '--accept-dns=false' "$LOG"
+grep -q 'gost -L=tcp://127.0.0.1:15432/10.0.0.5:5432 -F=socks5://127.0.0.1:1055' "$LOG"
+grep -q 'app hello' "$LOG"
+
+set +e
+APP_EXIT=23 "$ROOT/lib/with-tailscale-postgres" app >/dev/null 2>&1
+code=$?
+set -e
+[[ $code -eq 23 ]] || { echo "expected child exit 23, got $code" >&2; exit 1; }
+
+unset TS_TAGS
+set +e
+output=$("$ROOT/lib/with-tailscale-postgres" app 2>&1)
+code=$?
+set -e
+[[ $code -ne 0 && "$output" == *"TS_TAGS is required"* ]]
+
+echo "All tests passed"
