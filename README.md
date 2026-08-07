@@ -1,73 +1,212 @@
-# Heroku buildpack to use Tailscale on Heroku
+# Heroku Tailscale PostgreSQL Buildpack
 
-Run [Tailscale](https://tailscale.com/) on a Heroku dyno.
+A narrowly scoped Heroku buildpack that:
 
-This buildpack installs and configures Tailscale in [userspace networking](https://tailscale.com/kb/1112/userspace-networking) mode so that it is able to run on a Heroku dyno.  A SOCKS5 proxy is available at `localhost:1055` to provide access to a tailnet.
+1. runs Tailscale in userspace networking mode;
+2. registers each dyno as an ephemeral, tagged Tailscale node using an OAuth client secret;
+3. exposes one local TCP endpoint for PostgreSQL; and
+4. runs the application without ProxyChains or global proxy environment variables.
 
-## Usage
+It deliberately does **not** intercept all process networking, rewrite Rails executables, modify `ALL_PROXY`, or start automatically from `.profile.d`.
 
-To set up your Heroku application:
-1. Add the buildpack to your app with `heroku buildpacks:add https://github.com/ynab/heroku-tailscale-buildpack --app your-app-name`
-1. Obtain a Tailscale Auth key and set the environment variable `TAILSCALE_AUTH_KEY` using its value: `heroku config:set TAILSCALE_AUTH_KEY="your-auth-key-or-oauth-secret" --app your-app-name`
+## Architecture
 
-    ⚠ Note: You may also provide an OAuth Client Secret for the `TAILSCALE_AUTH_KEY` value but when doing so, you must also specify at least one tag to assign using the config `TAILSCALE_ADVERTISE_TAGS`.
-
-1. Configure your application to use the Tailscale network by sending network requests through the SOCKS5 proxy listening at `127.0.0.1:1005`.  If any of the following apply to your app, no changes will need to be made:
-   1. Your app reads and respects the environment variable `ALL_PROXY`.
-   2. You are using a Ruby on Rails app and calling `bundle exec ...`, `rake ...`, or `rails ...` to start your app.  This buildpack will automatically configure the environment to use the SOCKS proxy by configuring a ProxyChains passthrough script for these scripts.
-    
-    ⚠ Note: If you are not able to configure your application to send requests through a SOCKS5 proxy, you will need to use [ProxyChains](#proxychains).  See additional instructions [below](#proxychains).       
-
-1. Push a change to your Heroku app to build and deploy a new version
-
-
-## ProxyChains
-
-The buildpack pre-installs [ProxyChains](https://github.com/rofl0r/proxychains-ng) which is a program that forces any TCP connection made by an application through a proxy like SOCKS5.  Usage of ProxyChains is only necessary if your application does not support SOCKS5 proxies natively.
-
-To use ProxyChains, update your `Procfile` to prefix your command(s) with `bin/tailscale_proxy`.  For example, if you are using Django and Celery, your `Procfile` might look like this:
-
-```
-web: bin/tailscale_proxy uvicorn --host 0.0.0.0 --port "$PORT" myproject.project.asgi:application
-worker: bin/tailscale_proxy celery -A myproject.project worker
+```text
+Rails / Sidekiq / psql
+        |
+        | TCP 127.0.0.1:15432
+        v
+      gost
+        |
+        | SOCKS5 127.0.0.1:1055
+        v
+ tailscaled --tun=userspace-networking
+        |
+        | encrypted tailnet connection
+        v
+subnet router or Tailscale host -> PostgreSQL:5432
 ```
 
-If the `TAILSCALE_AUTH_KEY` environment variable is set, the `bin/tailscale_proxy` script will configure the application to use ProxyChains.  Otherwise, the application will be run without ProxyChains.
+TLS remains end-to-end between libpq and PostgreSQL. `gost` and Tailscale only carry the byte stream.
 
-## Known issues
+## Authentication terminology
 
-- Connecting via tailnet hostnames is not supported.  You must use the tailnet IP address of the target machine.
+This buildpack uses a Tailscale **OAuth client secret**, not an OIDC key. Tailscale accepts an OAuth client secret directly as `tailscale up --auth-key=...` when the client has the `auth_keys` scope and authorized tags. OAuth-registered devices are ephemeral by default.
 
-## Testing the integration
+Federated OIDC workload identity would avoid a long-lived secret, but requires the hosting platform to issue a suitable workload identity token. This buildpack does not assume Heroku provides one.
 
-To test a connection, you can add the ``hello.ts.net`` machine into your network,
-[follow the instructions here](https://tailscale.com/kb/1073/hello/?q=testing).  Once this machine is added to your network, you can test the connection by running:
+## Tailnet setup
 
-```shell
-heroku run heroku-tailscale-test.sh --app your-app-name
+Create a dedicated source tag, for example:
+
+```json
+{
+  "tagOwners": {
+    "tag:heroku-xbe-prod": ["group:platform"]
+  },
+  "grants": [
+    {
+      "src": ["tag:heroku-xbe-prod"],
+      "dst": ["10.40.2.15"],
+      "ip": ["tcp:5432"]
+    }
+  ]
+}
 ```
 
-You should see curl respond with ``<a href="https://hello.ts.net">Found</a>.``
+Create an OAuth client with:
 
+- scope: `auth_keys`;
+- tag: `tag:heroku-xbe-prod` only.
+
+Do not grant broad device-management scopes or unrelated tags.
+
+## Install
+
+Add this buildpack before the language buildpack or test both orders in staging:
+
+```bash
+heroku buildpacks:add --index 1 https://github.com/x-b-e/heroku-tailscale-postgres-buildpack
+```
+
+Set configuration:
+
+```bash
+heroku config:set \
+  TS_OAUTH_SECRET='tskey-client-...' \
+  TS_TAGS='tag:heroku-xbe-prod' \
+  PRIVATE_DATABASE_HOST='10.40.2.15' \
+  PRIVATE_DATABASE_PORT='5432' \
+  LOCAL_DATABASE_PORT='15432'
+```
+
+Do not enable shell tracing around `TS_OAUTH_SECRET`.
+
+## Application database configuration
+
+Point libpq at the local listener. Preserve the real database hostname separately when using `sslmode=verify-full`.
+
+Rails `database.yml` example:
+
+```yaml
+production:
+  adapter: postgresql
+  host: <%= ENV.fetch("DATABASE_TLS_HOST") %>
+  hostaddr: 127.0.0.1
+  port: <%= ENV.fetch("LOCAL_DATABASE_PORT", 15432) %>
+  database: <%= ENV.fetch("DATABASE_NAME") %>
+  username: <%= ENV.fetch("DATABASE_USERNAME") %>
+  password: <%= ENV.fetch("DATABASE_PASSWORD") %>
+  sslmode: verify-full
+  sslrootcert: <%= ENV.fetch("DATABASE_SSL_ROOT_CERT") %>
+  connect_timeout: 5
+  keepalives: 1
+  keepalives_idle: 30
+  keepalives_interval: 10
+  keepalives_count: 3
+```
+
+`hostaddr` controls the TCP destination; `host` remains the hostname checked against the server certificate.
+
+## Procfile
+
+Wrap only process types that need the private database:
+
+```procfile
+web: bin/with-tailscale-postgres bundle exec puma -C config/puma.rb
+worker: bin/with-tailscale-postgres bundle exec sidekiq
+release: bin/with-tailscale-postgres bundle exec rails db:migrate
+```
+
+A process not using the wrapper has ordinary Heroku networking and does not create a Tailscale node.
 
 ## Configuration
 
-The following settings are available for configuration via environment variables:
+| Variable | Required | Default | Purpose |
+|---|---:|---|---|
+| `TS_OAUTH_SECRET` | yes | | OAuth client secret with `auth_keys` scope |
+| `TS_TAGS` | yes | | Comma-separated authorized tags |
+| `PRIVATE_DATABASE_HOST` | yes | | Tailnet IP or private IP reachable through a subnet router |
+| `PRIVATE_DATABASE_PORT` | no | `5432` | Remote PostgreSQL port |
+| `LOCAL_DATABASE_HOST` | no | `127.0.0.1` | Local bind address; do not use `0.0.0.0` |
+| `LOCAL_DATABASE_PORT` | no | `15432` | Local PostgreSQL port |
+| `TS_SOCKS_HOST` | no | `127.0.0.1` | Local SOCKS bind address |
+| `TS_SOCKS_PORT` | no | `1055` | Local SOCKS port |
+| `TS_HOSTNAME` | no | Heroku app/dyno | Tailscale device name |
+| `TS_UP_TIMEOUT` | no | `20s` | `tailscale up` timeout |
+| `STARTUP_TIMEOUT_SECONDS` | no | `30` | Forwarder startup timeout |
+| `VERIFY_DATABASE_CONNECTION` | no | `true` | Run `pg_isready` when available |
+| `TAILSCALE_VERSION` | build | `1.80.2` | Pinned Tailscale version |
+| `GOST_VERSION` | build | `3.2.6` | Pinned gost version; checksums currently cover 3.2.6 |
 
-- ``TAILSCALE_AUTH_KEY`` - Provide an Auth key for authentication.  You may alternatively provide an OAuth Client Secret but you must also set the `TAILSCALE_ADVERTISE_TAGS` environment variable. **This must be set.**
-- ``TAILSCALE_ADVERTISE_TAGS`` - Tags to assign to this device.   Each tag name should be prefixed with `tag:` and multiple tags should be delimited with a comma.  For example, if you wanted to assign the tags `development-database` and `development-server` you would specify the value `tag:development-database,tag:development-server`.  If the `TAILSCALE_AUTH_KEY` is an OAuth Client Secret, this value is required.
-- ``TAILSCALE_HOSTNAME`` - Provide a hostname to use for the device instead of the one provided 
-  by the OS. Note that this will change the machine name used in MagicDNS. Defaults to the 
-  hostname of the application (a guid). If you have [Heroku Labs runtime-dyno-metadata](https://devcenter.heroku.com/articles/dyno-metadata)
-  enabled, it defaults to ``[appname]-[commit]-[dyno]``.
-- `TAILSCALE_ADDITIONAL_ARGS` - Additional arguments to pass when running `tailscale up`.  See https://tailscale.com/kb/1080/cli for details.
+Changing `GOST_VERSION` requires updating the pinned SHA-256 values in `bin/compile`.
 
-Note: `--accept-routes` is always passed to `tailscale up` to ensure that any advertized routes are accepted by the Tailscale client.
+## Failure behavior
 
-## Credit
+The application does not start unless:
 
-This approach is based on Tailscale Heroku/Docker docs here: https://tailscale.com/kb/1107/heroku/ but has been adapted for use as a Heroku buildpack.
+- `tailscaled` is running;
+- the dyno has joined the tailnet;
+- `gost` is listening locally; and
+- PostgreSQL answers `pg_isready`, when that command is installed and verification is enabled.
 
-Thank you to @rdotts, @kongmadai, @mvisonneau for the work on tailscale-docker and tailscale-heroku.
+If the application exits, the wrapper exits with the same status. On `TERM` or `INT`, the wrapper forwards the signal and stops the forwarder and Tailscale daemon.
 
-Thank you @tim-schilling for the work on the original [heroku-tailscale-buildpack](https://github.com/aspiredu/heroku-tailscale-buildpack) repo from which this repo was forked.
+## Security properties
+
+- The local database listener binds only to `127.0.0.1` by default.
+- No process-wide `LD_PRELOAD`, ProxyChains, `ALL_PROXY`, or DNS interception.
+- Ephemeral nodes reduce stale device accumulation.
+- The OAuth client can be restricted to one tag.
+- Tailscale and gost downloads are checksum-verified.
+- PostgreSQL TLS should remain enabled, preferably `verify-full`.
+
+The OAuth secret is still a long-lived credential. Store it as a Heroku config var, restrict who can read app configuration, rotate it, and revoke it immediately after suspected exposure.
+
+## Testing
+
+Run the shell test suite:
+
+```bash
+bash tests/run
+```
+
+Run linting when ShellCheck is installed:
+
+```bash
+shellcheck bin/* lib/* tests/run
+```
+
+### Staging integration test
+
+Use a non-production PostgreSQL endpoint and a staging-only tag. Then run:
+
+```bash
+heroku run 'bin/with-tailscale-postgres psql "$DATABASE_URL" -c "select 1"' --app APP
+```
+
+Test at least:
+
+1. successful web and worker startup;
+2. bad OAuth secret;
+3. denied tailnet ACL;
+4. unreachable subnet router;
+5. PostgreSQL restart;
+6. dyno `SIGTERM` and graceful shutdown;
+7. preboot deploy with old and new dynos overlapping;
+8. release-phase migrations;
+9. one-off console behavior;
+10. recovery of ActiveRecord pools after the tunnel is interrupted.
+
+## Updating dependencies
+
+1. Choose a tested Tailscale stable version.
+2. Confirm its `.sha256` file exists on `pkgs.tailscale.com`.
+3. Choose a stable gost release.
+4. Replace the gost version and architecture checksums together.
+5. Run tests and staging failure drills.
+6. Deploy by immutable Git commit SHA rather than a moving branch URL.
+
+## Why not nginx?
+
+nginx in front of Puma handles inbound HTTP. It does not create private outbound database routing. Its stream module could act as a TCP forwarder, but it would still need the same SOCKS/Tailscale bridge and would add unnecessary configuration.
